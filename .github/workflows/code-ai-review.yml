@@ -1,0 +1,100 @@
+name: Code AI Review
+
+# Auto-review a PR diff against the review guidelines with an LLM.
+# Auto on PR open/reopen; re-review after fix pushes via manual workflow_dispatch.
+# (synchronize is omitted to avoid re-review noise on every push; head-SHA dedup
+#  in the review skill keeps manual re-runs idempotent.)
+#
+# `/code-review` below is the slash command of your review skill (the prompt that
+# implements review-techniques.md) — this repo ships the guidelines, not the skill.
+#
+# Note: with the API-key auth shown here, secrets are NOT passed to PRs from forks,
+# so this triggers only for same-repo PRs. Gate fork PRs explicitly if you need them.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened]
+    paths:
+      - "**/*.swift" # this workflow owns Swift only; openapi-ai-review.yml owns the spec
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: code-ai-review-${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Resolve context
+        id: ctx
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const isDispatch = context.eventName === 'workflow_dispatch';
+            let prNumber, headSha, baseRef;
+            if (isDispatch) {
+              prNumber = context.payload.inputs.pr_number;
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner, repo: context.repo.repo,
+                pull_number: parseInt(prNumber),
+              });
+              headSha = pr.head.sha;
+              baseRef = pr.base.ref;
+            } else {
+              prNumber = context.payload.pull_request.number.toString();
+              headSha = context.payload.pull_request.head.sha;
+              baseRef = context.payload.pull_request.base.ref;
+            }
+            core.setOutput('pr_number', prNumber);
+            core.setOutput('head_sha', headSha);
+            core.setOutput('base_ref', baseRef);
+
+      # Read the PR head by SHA (not branch name).
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.ctx.outputs.head_sha }}
+          fetch-depth: 0
+
+      # Restore the review instructions from base, so a PR can't edit the
+      # guidelines/skill in the same PR and hijack its own review criteria.
+      - name: Restore review instructions from base
+        run: |
+          git fetch --depth=1 origin "${{ steps.ctx.outputs.base_ref }}"
+          # The instruction files your reviewer reads (guidelines docs + the review skill).
+          # Replace with your own paths.
+          instruction_files=(
+            docs/code-review/ja/principles.md
+            docs/code-review/ja/review-techniques.md
+            docs/code-review/ja/swift/swift.md
+            docs/code-review/ja/swift/swiftui.md
+            .claude/skills/guidelines-review/SKILL.md
+          )
+          for f in "${instruction_files[@]}"; do
+            git checkout FETCH_HEAD -- "$f" 2>/dev/null || echo "skip (not on base): $f"
+          done
+
+      - name: Run review skill
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: "/guidelines-review #${{ steps.ctx.outputs.pr_number }} --lang ja"
+          # Review-only: read + gh + writing the review payload. Don't disable the
+          # permission gate wholesale (no --dangerously-skip-permissions).
+          # Pick the model by testing on real diffs (see review-techniques.md "Model choice").
+          claude_args: |
+            --model claude-opus-5
+            --allowedTools "Read,Grep,Glob,Bash(gh:*),Write"

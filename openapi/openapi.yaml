@@ -1,0 +1,131 @@
+openapi: 3.1.0
+info:
+  title: Playground API
+  version: 1.0.0
+  description: |
+    A small, deliberately well-formed spec. It exists so that the PR that adds a badly
+    designed one has something consistent to be inconsistent with.
+
+servers:
+  - url: https://api.example.com/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: articles
+    description: Published articles.
+
+paths:
+  /articles:
+    get:
+      tags: [articles]
+      operationId: listArticles
+      summary: List published articles.
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/PageToken"
+      responses:
+        "200":
+          description: A page of articles.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArticlePage"
+
+  /articles/{articleId}:
+    get:
+      tags: [articles]
+      operationId: getArticle
+      summary: Get one article.
+      parameters:
+        - name: articleId
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/ArticleId"
+      responses:
+        "200":
+          description: The article.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Article"
+        "404":
+          description: No article with that id.
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    PageSize:
+      name: pageSize
+      in: query
+      required: false
+      description: Maximum number of items to return. Defaults to 20 when omitted.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+    PageToken:
+      name: pageToken
+      in: query
+      required: false
+      description: Opaque cursor returned as `nextPageToken` by the previous call.
+      schema:
+        type: string
+        maxLength: 512
+
+  schemas:
+    ArticleId:
+      type: string
+      description: Opaque article identifier. Consistently a string across every endpoint.
+      maxLength: 64
+      example: "art_8f21c0"
+
+    Article:
+      type: object
+      required: [id, title, publishedAt, category, isBookmarked]
+      properties:
+        id:
+          $ref: "#/components/schemas/ArticleId"
+        title:
+          type: string
+          maxLength: 200
+        publishedAt:
+          type: string
+          format: date-time
+          description: RFC 3339 timestamp of publication.
+        category:
+          $ref: "#/components/schemas/ArticleCategory"
+        isBookmarked:
+          type: boolean
+          description: Whether the calling user has bookmarked this article.
+
+    ArticleCategory:
+      type: string
+      description: |
+        A single classification axis: what kind of content the article is.
+        Left open (`string` with documented known values) rather than a closed `enum`,
+        because the set grows on the server side.
+      example: tutorial
+
+    ArticlePage:
+      type: object
+      required: [articles]
+      description: |
+        `articles` is required and is an empty array when there are no results, so
+        "zero items" and "missing" stay distinguishable.
+      properties:
+        articles:
+          type: array
+          items:
+            $ref: "#/components/schemas/Article"
+        nextPageToken:
+          type: string
+          description: Cursor for the next page. Absent on the last page.
+          maxLength: 512

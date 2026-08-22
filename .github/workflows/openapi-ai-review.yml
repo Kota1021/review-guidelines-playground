@@ -1,0 +1,122 @@
+name: OpenAPI AI Review
+
+# Minimal sample: when a PR targeting your integration branch changes an OpenAPI
+# definition, Claude reviews the diff against the review rules in this repository
+# (<lang>/principles.md) and posts inline comments.
+#
+# This file is a TEMPLATE meant to be copied into your own repository.
+# Customize the following before use:
+#   - on.pull_request.branches : your integration branch name
+#   - on.pull_request.paths     : a glob matching where your spec lives
+#   - env.DEFAULT_REVIEW_LANG   : the language code for review output + rules file
+#                                 (see "Review language" note below)
+#   - the rules-file path / spec glob inside `prompt`
+#   - runs-on                   : a runner label available to you
+#   - secrets.ANTHROPIC_API_KEY : register in your repo/org Secrets
+#
+# Review language:
+#   The review is language-parameterized. `DEFAULT_REVIEW_LANG` (and the optional
+#   workflow_dispatch `lang` input) selects BOTH the rules file
+#   `<lang>/principles.md` AND the language Claude writes its comments in.
+#   Supported codes (must match a committed rules file):
+#     en, ja
+
+on:
+  pull_request:
+    branches: [main] # ← change to your integration branch
+    # opened/reopened only. Add `synchronize` to also re-review pushes after open.
+    types: [opened, reopened]
+    paths:
+      - "openapi/**/*.yaml" # this repo keeps its spec here
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number"
+        required: true
+        type: string
+      pr_branch:
+        description: "PR head branch name"
+        required: true
+        type: string
+      lang:
+        description: "Review language code (en, ja)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+concurrency:
+  group: openapi-ai-review-${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+  cancel-in-progress: true
+
+env:
+  DEFAULT_REVIEW_LANG: ja # this repo reviews in Japanese; set to en to see the same run in English
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Resolve context
+        id: ctx
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const isDispatch = context.eventName === 'workflow_dispatch';
+            const prNumber = isDispatch
+              ? context.payload.inputs.pr_number
+              : context.payload.pull_request.number.toString();
+            const prBranch = isDispatch
+              ? context.payload.inputs.pr_branch
+              : context.payload.pull_request.head.ref;
+            const lang = (isDispatch && context.payload.inputs.lang)
+              ? context.payload.inputs.lang
+              : process.env.DEFAULT_REVIEW_LANG || 'en';
+            core.setOutput('pr_number', prNumber);
+            core.setOutput('pr_branch', prBranch);
+            core.setOutput('lang', lang);
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.ctx.outputs.pr_branch }}
+          fetch-depth: 0
+
+      - name: Review openapi diff against rules
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          show_full_output: "true"
+          prompt: |
+            Review the OpenAPI definition changes in PR #${{ steps.ctx.outputs.pr_number }}.
+
+            Scope: ONLY the `openapi/**/*.yaml` changes in this PR's diff. Do not review any other files.
+            Basis: the language-agnostic API/schema design rules in `docs/openapi-review/${{ steps.ctx.outputs.lang }}/principles.md`
+            (the rules file for language code `${{ steps.ctx.outputs.lang }}`).
+            Output language: write EVERY review comment in the language identified by the code
+            `${{ steps.ctx.outputs.lang }}` (en=English, ja=日本語).
+
+            Steps:
+            1. Get the diff with `gh pr diff ${{ steps.ctx.outputs.pr_number }}` and identify the changed
+               paths / schemas / properties / enums / parameters under `openapi/`.
+            2. Check each change against each rule in the rules file. The rules are principles, not absolute
+               laws: flag only clear violations, and leave genuinely uncertain cases as a [!NOTE] question.
+            3. For each finding, quote the relevant rule (section name + the opening words of the rule) and post
+               it as an inline review comment via `gh` on the exact file and line.
+            4. Use GitHub Markdown Alerts to convey severity:
+               - `[!IMPORTANT]`: clear spec error, breaking change, or security issue
+               - `[!WARNING]`: design problem (mixed responsibilities, concept mismatch, type/null inconsistency, etc.)
+               - `[!TIP]`: naming / consistency / readability improvement
+               - `[!NOTE]`: confirmation or question
+            5. Non-openapi changes are out of scope. If there are no findings, leave a single summary comment:
+               "No issues found against docs/openapi-review/${{ steps.ctx.outputs.lang }}/principles.md."
+          # Review-only: read + gh only (no file edits, no arbitrary shell).
+          # Do NOT use --dangerously-skip-permissions, which removes all permission gating.
+          claude_args: |
+            --model claude-opus-5
+            --allowedTools "Read,Grep,Glob,Bash(gh:*)"

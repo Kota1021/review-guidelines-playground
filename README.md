@@ -80,6 +80,31 @@ that already exists here, which the reviewer can only catch by searching the cod
 Re-running is idempotent for the Swift reviewer: it stamps each review with the head SHA and
 skips a head it has already reviewed.
 
+## Cost and abuse
+
+A public repository with an API key in CI invites the obvious question: can a stranger burn
+the key? **No — GitHub blocks that structurally.** Workflows triggered by `pull_request` from
+a **fork** never receive repository secrets, so an outsider's PR runs with an empty
+`ANTHROPIC_API_KEY` and the action fails before spending anything. Neither workflow uses
+`pull_request_target`, which *would* hand secrets to fork code and is the usual way this goes
+wrong. Pushing a branch here, or using the `workflow_dispatch` entry, both require write
+access.
+
+What is left is worth naming honestly:
+
+| Residual risk | Why | Control |
+|---|---|---|
+| Someone with write access triggers runs | Same-repo branches do get the secret | Only add collaborators you trust |
+| Prompt injection from PR content | The reviewer reads an attacker-authored diff and holds `Bash(gh:*)` | Tools are read-only plus `gh`; the criteria are restored from base so a PR cannot rewrite its own rules |
+| Ordinary use costs money | Every run is a real API call | See below |
+
+The control that actually caps the damage is on the Anthropic side, not the GitHub side: use a
+**dedicated API key in its own Console workspace with a spend limit**. Then the worst case is
+bounded by a number you chose, whatever happens in CI.
+
+Both workflows also carry `timeout-minutes: 20`, `concurrency` with `cancel-in-progress`, and
+a job-level gate that skips fork PRs so they fail fast instead of noisily.
+
 ## Caveats
 
 - **Fork PRs are not reviewed.** With API-key auth, GitHub does not pass secrets to workflows

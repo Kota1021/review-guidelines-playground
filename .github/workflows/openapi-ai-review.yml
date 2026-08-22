@@ -11,6 +11,7 @@ name: OpenAPI AI Review
 #   - env.DEFAULT_REVIEW_LANG   : the language code for review output + rules file
 #                                 (see "Review language" note below)
 #   - the rules-file path / spec glob inside `prompt`
+#   - instruction_files       : the rules file paths as committed in your repo
 #   - runs-on                   : a runner label available to you
 #   - secrets.ANTHROPIC_API_KEY : register in your repo/org Secrets
 #
@@ -20,6 +21,9 @@ name: OpenAPI AI Review
 #   `<lang>/principles.md` AND the language Claude writes its comments in.
 #   Supported codes (must match a committed rules file):
 #     en, ja
+#
+# Note: with the API-key auth shown here, secrets are NOT passed to PRs from forks,
+# so this triggers only for same-repo PRs. Gate fork PRs explicitly if you need them.
 
 on:
   pull_request:
@@ -34,10 +38,6 @@ on:
         description: "PR number"
         required: true
         type: string
-      pr_branch:
-        description: "PR head branch name"
-        required: true
-        type: string
       lang:
         description: "Review language code (en, ja)"
         required: false
@@ -47,7 +47,6 @@ permissions:
   contents: read
   pull-requests: write
   issues: write
-  id-token: write
 
 concurrency:
   group: openapi-ai-review-${{ github.event.pull_request.number || github.event.inputs.pr_number }}
@@ -58,6 +57,10 @@ env:
 
 jobs:
   review:
+    # Same-repository PRs only. Fork PRs never receive secrets in the first place
+    # (GitHub withholds them for `pull_request` from forks), so this is not the security
+    # boundary — it just stops fork PRs from starting a run that can only fail.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -67,24 +70,48 @@ jobs:
         with:
           script: |
             const isDispatch = context.eventName === 'workflow_dispatch';
-            const prNumber = isDispatch
-              ? context.payload.inputs.pr_number
-              : context.payload.pull_request.number.toString();
-            const prBranch = isDispatch
-              ? context.payload.inputs.pr_branch
-              : context.payload.pull_request.head.ref;
+            let prNumber, headSha, baseRef;
+            if (isDispatch) {
+              prNumber = context.payload.inputs.pr_number;
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner, repo: context.repo.repo,
+                pull_number: parseInt(prNumber),
+              });
+              headSha = pr.head.sha;
+              baseRef = pr.base.ref;
+            } else {
+              prNumber = context.payload.pull_request.number.toString();
+              headSha = context.payload.pull_request.head.sha;
+              baseRef = context.payload.pull_request.base.ref;
+            }
             const lang = (isDispatch && context.payload.inputs.lang)
               ? context.payload.inputs.lang
               : process.env.DEFAULT_REVIEW_LANG || 'en';
             core.setOutput('pr_number', prNumber);
-            core.setOutput('pr_branch', prBranch);
+            core.setOutput('head_sha', headSha);
+            core.setOutput('base_ref', baseRef);
             core.setOutput('lang', lang);
 
+      # Read the PR head by SHA (not branch name).
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ steps.ctx.outputs.pr_branch }}
+          ref: ${{ steps.ctx.outputs.head_sha }}
           fetch-depth: 0
+
+      # Restore the rules from base, so a PR can't edit the review criteria in the
+      # same PR and hijack its own review.
+      - name: Restore review instructions from base
+        run: |
+          git fetch --depth=1 origin "${{ steps.ctx.outputs.base_ref }}"
+          # The rules file your reviewer reads, as committed in your repo.
+          # Replace with your own path.
+          instruction_files=(
+            "docs/openapi-review/${{ steps.ctx.outputs.lang }}/principles.md"
+          )
+          for f in "${instruction_files[@]}"; do
+            git checkout FETCH_HEAD -- "$f" 2>/dev/null || echo "skip (not on base): $f"
+          done
 
       - name: Review openapi diff against rules
         uses: anthropics/claude-code-action@v1
@@ -117,6 +144,7 @@ jobs:
                "No issues found against docs/openapi-review/${{ steps.ctx.outputs.lang }}/principles.md."
           # Review-only: read + gh only (no file edits, no arbitrary shell).
           # Do NOT use --dangerously-skip-permissions, which removes all permission gating.
+          # Pick the model by testing on real diffs, not by name or size.
           claude_args: |
             --model claude-opus-5
             --allowedTools "Read,Grep,Glob,Bash(gh:*)"

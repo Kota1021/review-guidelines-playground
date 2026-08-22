@@ -54,6 +54,105 @@ paths:
         "404":
           description: No article with that id.
 
+  /bookmarks:
+    get:
+      tags: [bookmarks]
+      operationId: getBookmarks
+      summary: Get bookmarks.
+      security: []
+      parameters:
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: usrNm
+          in: query
+          required: false
+          description: user name
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bookmarks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Bookmark"
+                  owner:
+                    type: object
+                    properties:
+                      userId:
+                        type: integer
+                      usrNm:
+                        type: string
+                      email:
+                        type: string
+                        example: kotaro.matsumoto@example-corp.co.jp
+                      deleteFlag:
+                        type: boolean
+
+  /bookmarks/summary:
+    get:
+      tags: [bookmarks]
+      operationId: getBookmarkSummary
+      summary: Get the bookmark summary.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bookmarkCnt:
+                    type: number
+                  owner:
+                    type: object
+                    properties:
+                      userId:
+                        type: integer
+                      usrNm:
+                        type: string
+                      email:
+                        type: string
+                      deleteFlag:
+                        type: boolean
+
+  /subscription:
+    post:
+      tags: [bookmarks]
+      operationId: createSubscription
+      summary: Start a subscription.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                price:
+                  type: string
+                  example: "1200"
+                password:
+                  type: string
+                  example: "P@ssw0rd!"
+                apiToken:
+                  type: string
+                  example: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Subscription"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -129,3 +228,41 @@ components:
           type: string
           description: Cursor for the next page. Absent on the last page.
           maxLength: 512
+
+    Bookmark:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+        articleId:
+          type: string
+        createdDt:
+          type: string
+        updatedAt:
+          type: string
+        purchaseDate:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [active, deleted, premium, trial]
+        category:
+          type: string
+          nullable: true
+          enum: [news, tutorial, release]
+        shouldShowNewBadge:
+          type: boolean
+
+    Subscription:
+      type: object
+      properties:
+        expiresAt:
+          type: string
+          format: date-time
+        isExpired:
+          type: boolean
+        price:
+          type: string
+        deleteFlag:
+          type: boolean
